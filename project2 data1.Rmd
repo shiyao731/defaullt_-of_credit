@@ -1,0 +1,588 @@
+---
+title: "Project 2"
+author: "Yao Shi"
+date: "October 12, 2017"
+output: pdf_document
+---
+
+
+#import data 
+```{r}
+library(readxl)
+library(caret)
+library(kernlab)
+credit <- read_excel("E:/AML - BUAN 6341/default of credit card clients.xls",col_names = TRUE,skip = 1)
+names(credit)[25]="default"
+names(credit)[7:12] = c("SEP","AUG","JULY","JUNE","MAY","APR")
+names(credit)[13:18] = c("SEP_BILL","AUG_BILL","JULY_BILL","JUNE_BILL","MAY_BILL","APR_BILL")
+names(credit)[19:24] = c("SEP_PAY","AUG_PAY","JULY_PAY","JUNE_PAY","MAY_PAY","APR_PAY")
+
+
+```
+
+
+#creat dummy variables
+```{r}
+dummy <- function(var,q){
+name <- c()
+for (n in 1:length(var)){
+if (var[n] == q)
+{ name <- append(name, 1)}
+else if (var[n] !=q)
+         {name <- append(name, 0)}
+}
+return(name)
+}
+
+SEX <- dummy(credit$SEX, 1)
+Graduate_school <- dummy(credit$EDUCATION,1)
+university <- dummy(credit$EDUCATION,2)
+high_school <- dummy(credit$EDUCATION,3)
+married <-dummy(credit$MARRIAGE,1)
+single <- dummy(credit$MARRIAGE,2)
+credit_data <- cbind(credit[2],SEX,Graduate_school,university,high_school,married,single,credit[6:25])
+
+```
+#split data
+
+```{r}
+set.seed(154)
+Partition <- createDataPartition(credit_data$default, p = 0.7, list = FALSE)
+credit_train = credit_data[Partition, ]
+credit_test = credit_data[-Partition, ]
+```
+
+#Build SVM model
+```{r}
+Error_test <- function(y_hat,y){
+e <- sum(y_hat != y)/length(y)
+return(e)
+}
+
+Error_train <- function(y_hat,y){
+e <- sum(y_hat != y)/length(y)
+return(e)
+}
+svm_model_1 <- ksvm(x = as.matrix(credit_train[,-27]),
+                  y = as.factor(credit_train$default),
+                  type = 'C-svc', 
+                  kernel = "rbfdot",
+                  kpar = "automatic")
+pred_1 <- predict(svm_model_1, credit_test[-27])
+pred_train_1 <- predict(svm_model_1,credit_train[-27])
+e1<- Error_test(pred_1, credit_test$default)
+e1_train <-  Error_train(pred_train_1,credit_train$default)
+
+svm_model_2 <- ksvm(x = as.matrix(credit_train[,-27]),
+                  y = as.factor(credit_train$default),
+                  type = 'C-svc', 
+                  kernel = "vanilladot",
+                  kpar = "automatic")
+pred_2 <- predict(svm_model_2,credit_test[-27])
+pred_train_2 <- predict(svm_model_2,credit_train[-27])
+e2 <- Error_test(pred_2,credit_test$default)
+e2_train <-  Error_train(pred_train_2,credit_train$default)
+
+svm_model_3 <- ksvm(x = as.matrix(credit_train[,-27]),
+                  y = as.factor(credit_train$default),
+                  type = 'C-svc', 
+                  kernel = "polydot",
+                  kpar = "automatic")
+pred_3 <- predict(svm_model_3,credit_test[,-27])
+pred_train_3 <- predict(svm_model_3,credit_train[-27])
+e3 <- Error_test(pred_3,credit_test$default)
+e3_train <-  Error_train(pred_train_3,credit_train$default)
+
+e_svm <- as.data.frame(rbind(e1,e2,e3))
+e_train_svm <- as.data.frame(rbind(e1_train,e2_train,e3_train))
+e_total_svm <- cbind(e_svm,e_train_svm,c("rbfdot","vanilladot","polydot"))
+names(e_total_svm)[1:3]=c("e_test_svm","e_train_svm","kernel")
+
+```
+
+#build tree model
+```{r}
+library(rpart)
+tree <- rpart(default ~., data = credit_train,method = 'class')
+preds_1<- predict(tree,credit_test)
+preds_1 <- as.data.frame(preds_1)
+preds_train <- predict(tree,credit_train)
+preds_train <- as.data.frame(preds_train)
+result_tree <- as.data.frame(ifelse(preds_1[,1]>0.5,0,1))
+result_tree_train <- as.data.frame(ifelse(preds_train[,1]>0.5,0,1))
+e_tree_test <- Error_test(result_tree,credit_test$default)
+e_tree_train <- Error_train(result_tree_train,credit_train$default)
+  
+```
+
+#build boost
+```{r}
+library(xgboost)
+
+fit_boost<- xgboost(data = as.matrix(credit_train[,-27]),
+                    nround = 100,
+                    label = as.matrix(as.factor(credit_train$default)),
+                    verbose = 0,
+                    objective = "binary:logistic")
+pred_boost <- predict(fit_boost, as.matrix(credit_test[,-27]))
+pred_boost<- as.data.frame(pred_boost)
+pred_t_boost <- predict(fit_boost,as.matrix(credit_train[,-27]))
+pred_t_boost <- as.data.frame((pred_t_boost))
+result_boost <- ifelse(pred_boost[,1]>0.5,1,0)
+result_t_boost <- ifelse(pred_t_boost[,1]>0.5,1,0)
+e_boost_test <- Error_test(result_boost,credit_test$default)
+e_boost_train <- Error_train(result_t_boost,credit_train$default)
+
+```
+
+#pruning for boost
+```{r}
+nrd <- seq(10,150,10)
+error_test <- matrix()
+error_train <- matrix()
+for (i in 1:length(nrd)){
+fit_boost_1<- xgboost(data = as.matrix(credit_train[,-27]),
+                    nround = nrd[i],
+                    label = as.matrix(as.factor(credit_train$default)),
+                    verbose = 0,
+                    objective = "binary:logistic")
+pred_test_boost <- predict(fit_boost_1,as.matrix(credit_test[, -27]))
+pred_test_boost<- as.data.frame(pred_test_boost)
+result_test_boost <- ifelse(pred_test_boost[,1]>0.5,1,0)
+error_test_boost <- Error_test(result_test_boost,credit_test$default)
+error_test[[i]] <- error_test_boost
+pred_train_boost <- predict(fit_boost_1,as.matrix(credit_train[, -27]))
+pred_train_boost<- as.data.frame(pred_train_boost)
+result_train_boost <- ifelse(pred_train_boost[,1]>0.5,1,0)
+error_train_boost <- Error_train(result_train_boost,credit_train$default)
+error_train[[i]]<- error_train_boost
+}
+
+result_boost_sel <- cbind(data.frame(error_test),data.frame(error_train),data.frame(nrd))
+
+ggplot(data = result_boost_sel) + geom_point( mapping = aes(x = nrd, y = error_test,colour = "test")) + geom_line( mapping = aes(x = nrd, y = error_test,colour = "test")) + geom_point( mapping = aes(x = nrd, y = error_train,colour = "train")) + geom_line( mapping = aes(x = nrd, y = error_train,"train"))
+```
+
+#buid svm model with different data size
+```{r}
+set.seed(154)
+Partition <- createDataPartition(credit_data$default, p = 0.3, list = FALSE)
+credit_train_1 = credit_data[Partition, ]
+credit_test_1 = credit_data[-Partition, ]
+
+set.seed(154)
+Partition <- createDataPartition(credit_data$default, p = 0.4, list = FALSE)
+credit_train_2 = credit_data[Partition, ]
+credit_test_2 = credit_data[-Partition, ]
+
+set.seed(154)
+Partition <- createDataPartition(credit_data$default, p = 0.5, list = FALSE)
+credit_train_3 = credit_data[Partition, ]
+credit_test_3 = credit_data[-Partition, ]
+
+set.seed(154)
+Partition <- createDataPartition(credit_data$default, p = 0.6, list = FALSE)
+credit_train_4 = credit_data[Partition, ]
+credit_test_4 = credit_data[-Partition, ]
+
+set.seed(154)
+Partition <- createDataPartition(credit_data$default, p = 0.8, list = FALSE)
+credit_train_5 = credit_data[Partition, ]
+credit_test_5 = credit_data[-Partition, ]
+
+sv <- function(data){
+                  ksvm(x = as.matrix(data[,-27]),
+                  y = as.factor(data$default),
+                  type = 'C-svc', 
+                  kernel = "rbfdot",
+                  kpar = "automatic")
+}
+
+sv_1 <- sv(credit_train_1)
+sv_2 <- sv(credit_train_2)
+sv_3 <- sv(credit_train_3)
+sv_4 <- sv(credit_train_4)
+sv_5 <- sv(credit_train_5)
+
+predf <- function(models,data){
+              predict(models,data[,-27])
+}
+sv_1_pred<-predf(sv_1,credit_test_1)
+sv_2_pred<-predf(sv_2,credit_test_2)
+sv_3_pred<-predf(sv_3,credit_test_3)
+sv_4_pred<-predf(sv_4,credit_test_4)
+sv_5_pred<-predf(sv_5,credit_test_5)
+sv_1_train <-predf(sv_1,credit_train_1)
+sv_2_train <-predf(sv_2,credit_train_2)
+sv_3_train <-predf(sv_3,credit_train_3)
+sv_4_train <-predf(sv_4,credit_train_4)
+sv_5_train <-predf(sv_5,credit_train_5)
+
+error_1_train <- Error_train(sv_1_train,credit_train_1$default)
+error_2_train <- Error_train(sv_2_train,credit_train_2$default)
+error_3_train <- Error_train(sv_3_train,credit_train_3$default)
+error_4_train <- Error_train(sv_4_train,credit_train_4$default)
+error_5_train <- Error_train(sv_5_train,credit_train_5$default)
+
+error_1 <- Error_test(sv_1_pred,credit_test_1$default)
+error_2 <- Error_test(sv_2_pred,credit_test_2$default)
+error_3 <- Error_test(sv_3_pred,credit_test_3$default)
+error_4 <- Error_test(sv_4_pred,credit_test_4$default)
+error_5 <- Error_test(sv_5_pred,credit_test_5$default)
+
+total_train_error <- rbind(error_1_train,error_2_train,error_3_train,error_4_train,e_tree_train,error_5_train)
+total_error <- rbind(error_1,error_2,error_3,error_4,e_tree_test,error_5)
+size <- c(0.3,0.4,0.5,0.6,0.7,0.8)
+size_e <- as.data.frame(cbind(total_error,size,total_train_error))
+
+
+names(size_e)[1:3] = c("error","size","error_train")
+ggplot(data = size_e) + geom_point( mapping = aes(x = size, y = error,colour = 'test')) + geom_line( mapping = aes(x = size, y = error,colour = 'test')) + geom_point( mapping = aes(x = size, y = error_train,colour = 'train')) + geom_line( mapping = aes(x = size, y = error_train,colour = 'train'))
+
+```
+
+#buid decision tree model with different data size
+```{r}
+tree_f <- function(data){tree <- rpart(data$default ~., data = data,method = 'class')
+  
+}
+predf_tree <- function(models,data){
+  predict(models,data[,-27])
+}
+
+tree_1 <- tree_f(credit_train_1)
+tree_2 <- tree_f(credit_train_2)
+tree_3 <- tree_f(credit_train_3)
+tree_4 <- tree_f(credit_train_4)
+tree_5 <- tree_f(credit_train_5)
+predf_tree_1 <-as.data.frame(predf_tree(tree_1,credit_test_1))
+predf_tree_2 <-as.data.frame(predf_tree(tree_2,credit_test_2))
+predf_tree_3 <-as.data.frame(predf_tree(tree_3,credit_test_3))
+predf_tree_4 <-as.data.frame(predf_tree(tree_4,credit_test_4))
+predf_tree_5 <-as.data.frame(predf_tree(tree_5,credit_test_5))
+predf_traintree_1 <- as.data.frame(predf(tree_1,credit_train_1))
+predf_traintree_2 <- as.data.frame(predf(tree_2,credit_train_2))
+predf_traintree_3 <- as.data.frame(predf(tree_3,credit_train_3))
+predf_traintree_4 <- as.data.frame(predf(tree_4,credit_train_4))
+predf_traintree_5 <- as.data.frame(predf(tree_5,credit_train_5))
+
+result_tree_1<- as.data.frame(ifelse(predf_tree_1[,1]>0.5,0,1))
+result_tree_2<- as.data.frame(ifelse(predf_tree_2[,1]>0.5,0,1))
+result_tree_3<- as.data.frame(ifelse(predf_tree_3[,1]>0.5,0,1))
+result_tree_4<- as.data.frame(ifelse(predf_tree_4[,1]>0.5,0,1))
+result_tree_5<- as.data.frame(ifelse(predf_tree_5[,1]>0.5,0,1))
+
+result_traintree_1 <- as.data.frame(ifelse(predf_traintree_1[,1]>0.5,0,1))
+result_traintree_2 <- as.data.frame(ifelse(predf_traintree_2[,1]>0.5,0,1))
+result_traintree_3 <- as.data.frame(ifelse(predf_traintree_3[,1]>0.5,0,1))
+result_traintree_4 <- as.data.frame(ifelse(predf_traintree_4[,1]>0.5,0,1))
+result_traintree_5 <- as.data.frame(ifelse(predf_traintree_5[,1]>0.5,0,1))
+
+error_tree_1 <- Error_test(result_tree_1,credit_test_1$default)
+error_tree_2 <- Error_test(result_tree_2,credit_test_2$default)
+error_tree_3 <- Error_test(result_tree_3,credit_test_3$default)
+error_tree_4 <- Error_test(result_tree_4,credit_test_4$default)
+error_tree_5 <- Error_test(result_tree_5,credit_test_5$default)
+
+error_traintree_1 <- Error_train(result_traintree_1,credit_train_1$default)
+error_traintree_2 <- Error_train(result_traintree_2,credit_train_2$default)
+error_traintree_3 <- Error_train(result_traintree_3,credit_train_3$default)
+error_traintree_4 <- Error_train(result_traintree_4,credit_train_4$default)
+error_traintree_5 <- Error_train(result_traintree_5,credit_train_5$default)
+
+total_traintree_error <- rbind(error_traintree_1,error_traintree_2,error_traintree_3,error_traintree_4,e_tree_train,error_traintree_5)
+total_tree_error <- rbind(error_tree_1,error_tree_2,error_tree_3,error_tree_4,e_tree_test,error_tree_5)
+size_e_tree <- as.data.frame(cbind(total_tree_error,size,total_traintree_error))
+
+
+names(size_e_tree)[1:3] = c("error","size","error_train")
+ggplot(data = size_e_tree) + geom_point( mapping = aes(x = size, y = error,colour = 'test')) + geom_line( mapping = aes(x = size, y = error,colour = 'test')) + geom_point( mapping = aes(x = size, y = error_train, colour = 'train')) + geom_line( mapping = aes(x = size, y = error_train, colour = 'train'))
+```
+
+#buid boost model with different data size
+```{r}
+boost_f <- function(data){
+  fit_boost<- xgboost(data = as.matrix(data[,-27]),
+                    nround = 10,
+                    label = as.matrix(as.factor(data$default)),
+                    verbose = 0,
+                    objective = "binary:logistic")
+}
+predf_boost <- function(models, data){
+  pred_boost <- predict(models, as.matrix(data[,-27]))
+}
+boost_1 <- boost_f(credit_train_1)
+boost_2 <- boost_f(credit_train_2)
+boost_3 <- boost_f(credit_train_3)
+boost_4 <- boost_f(credit_train_4)
+boost_5 <- boost_f(credit_train_5)
+predf_boost_1 <-as.data.frame(predf_boost(boost_1,credit_test_1))
+predf_boost_2 <-as.data.frame(predf_boost(boost_2,credit_test_2))
+predf_boost_3 <-as.data.frame(predf_boost(boost_3,credit_test_3))
+predf_boost_4 <-as.data.frame(predf_boost(boost_4,credit_test_4))
+predf_boost_5 <-as.data.frame(predf_boost(boost_5,credit_test_5))
+predf_trainboost_1 <- as.data.frame(predf_boost(boost_1,credit_train_1))
+predf_trainboost_2 <- as.data.frame(predf_boost(boost_2,credit_train_2))
+predf_trainboost_3 <- as.data.frame(predf_boost(boost_3,credit_train_3))
+predf_trainboost_4 <- as.data.frame(predf_boost(boost_4,credit_train_4))
+predf_trainboost_5 <- as.data.frame(predf_boost(boost_5,credit_train_5))
+
+result_boost_1<- as.data.frame(ifelse(predf_boost_1[,1]>0.5,1,0))
+result_boost_2<- as.data.frame(ifelse(predf_boost_2[,1]>0.5,1,0))
+result_boost_3<- as.data.frame(ifelse(predf_boost_3[,1]>0.5,1,0))
+result_boost_4<- as.data.frame(ifelse(predf_boost_4[,1]>0.5,1,0))
+result_boost_5<- as.data.frame(ifelse(predf_boost_5[,1]>0.5,1,0))
+
+result_trainboost_1 <- as.data.frame(ifelse(predf_trainboost_1[,1]>0.5,1,0))
+result_trainboost_2 <- as.data.frame(ifelse(predf_trainboost_2[,1]>0.5,1,0))
+result_trainboost_3 <- as.data.frame(ifelse(predf_trainboost_3[,1]>0.5,1,0))
+result_trainboost_4 <- as.data.frame(ifelse(predf_trainboost_4[,1]>0.5,1,0))
+result_trainboost_5 <- as.data.frame(ifelse(predf_trainboost_5[,1]>0.5,1,0))
+
+error_boost_1 <- Error_test(result_boost_1,credit_test_1$default)
+error_boost_2 <- Error_test(result_boost_2,credit_test_2$default)
+error_boost_3 <- Error_test(result_boost_3,credit_test_3$default)
+error_boost_4 <- Error_test(result_boost_4,credit_test_4$default)
+error_boost_5 <- Error_test(result_boost_5,credit_test_5$default)
+
+error_trainboost_1 <- Error_train(result_trainboost_1,credit_train_1$default)
+error_trainboost_2 <- Error_train(result_trainboost_2,credit_train_2$default)
+error_trainboost_3 <- Error_train(result_trainboost_3,credit_train_3$default)
+error_trainboost_4 <- Error_train(result_trainboost_4,credit_train_4$default)
+error_trainboost_5 <- Error_train(result_trainboost_5,credit_train_5$default)
+
+total_trainboost_error <- rbind(error_trainboost_1,error_trainboost_2,error_trainboost_3,error_trainboost_4,e_boost_train,
+                                error_trainboost_5)
+total_boost_error <- rbind(error_boost_1,error_boost_2,error_boost_3,error_boost_4,e_boost_test,error_boost_5)
+size_e_boost <- as.data.frame(cbind(total_boost_error,size,total_trainboost_error))
+
+
+names(size_e_boost)[1:3] = c("error","size","error_train")
+ggplot(data = size_e_boost) + geom_point( mapping = aes(x = size, y = error,colour = 'test')) + geom_line( mapping = aes(x = size, y = error,colour = 'test')) + geom_point( mapping = aes(x = size, y = error_train,colour = 'train')) + geom_line( mapping = aes(x = size, y = error_train,colour = 'train'))
+
+```
+
+#Creatfold
+```{r}
+flds <- createFolds(credit_train$default, k = 5, list = TRUE, returnTrain = FALSE)
+test_1 <- credit_train[flds[[1]],]
+train_1 <- credit_train[-flds[[1]],]
+test_2 <- credit_train[flds[[2]],]
+train_2 <- credit_train[-flds[[2]],]
+test_3 <- credit_train[flds[[3]],]
+train_3 <- credit_train[-flds[[3]],]
+test_4 <- credit_train[flds[[4]],]
+train_4 <- credit_train[-flds[[4]],]
+test_5 <- credit_train[flds[[5]],]
+train_5 <- credit_train[-flds[[5]],]
+
+```
+
+#build svm by n-fold
+
+```{r}
+k=seq(1,5,1)
+svm_fit_1 <- sv(train_1)
+svm_fit_2 <- sv(train_2)
+svm_fit_3 <- sv(train_3)
+svm_fit_4 <- sv(train_4)
+svm_fit_5 <- sv(train_5)
+
+svm_val_1 <- predf(svm_fit_1,test_1)
+svm_val_2 <- predf(svm_fit_2,test_2)
+svm_val_3 <- predf(svm_fit_3,test_3)
+svm_val_4 <- predf(svm_fit_4,test_4)
+svm_val_5 <- predf(svm_fit_5,test_5)
+
+svm_pred_1 <-predf(svm_fit_1,credit_test) 
+svm_pred_2 <-predf(svm_fit_2,credit_test)
+svm_pred_3 <-predf(svm_fit_3,credit_test)
+svm_pred_4 <-predf(svm_fit_4,credit_test)
+svm_pred_5 <-predf(svm_fit_5,credit_test)
+
+error_svm_train1 <- Error_train(svm_val_1,train_1$default)
+error_svm_train2 <- Error_train(svm_val_2,train_1$default)
+error_svm_train3 <- Error_train(svm_val_3,train_1$default)
+error_svm_train4 <- Error_train(svm_val_4,train_1$default)
+error_svm_train5 <- Error_train(svm_val_5,train_1$default)
+
+error_svm_val1 <- Error_train(svm_val_1,test_1$default)
+error_svm_val2 <- Error_train(svm_val_2,test_2$default)
+error_svm_val3 <- Error_train(svm_val_3,test_3$default)
+error_svm_val4 <- Error_train(svm_val_4,test_4$default)
+error_svm_val5 <- Error_train(svm_val_5,test_5$default)
+
+error_pred_svm1 <- Error_test(svm_pred_1,credit_test$default)
+error_pred_svm2 <- Error_test(svm_pred_2,credit_test$default)
+error_pred_svm3 <- Error_test(svm_pred_3,credit_test$default)
+error_pred_svm4 <- Error_test(svm_pred_4,credit_test$default)
+error_pred_svm5 <- Error_test(svm_pred_5,credit_test$default)
+
+
+
+
+all_error_svmtrain <- rbind(error_svm_train1,error_svm_train2,error_svm_train3,error_svm_train4,error_svm_train5)
+all_error_svmval <- rbind(error_svm_val1,error_svm_val2,error_svm_val3,error_svm_val4,error_svm_val5)
+all_error_svm <- rbind(error_pred_svm1,error_pred_svm2,error_pred_svm3,error_pred_svm4,error_pred_svm5)
+
+
+error_svm_outcome <- as.data.frame(cbind(all_error_svmtrain,all_error_svmval,all_error_svm,k))
+names(error_svm_outcome)[1:4] = c("error_train","error_eval","error_test","k")
+ggplot(data = error_svm_outcome) + geom_point( mapping = aes(x = k, y = error_eval,colour= 'val')) + geom_line( mapping = aes(x = k, y = error_eval,colour= 'val')) + geom_point( mapping = aes(x = k, y = error_train,colour= 'train')) + geom_line( mapping = aes(x = k, y = error_train,colour= 'train'))+geom_point( mapping = aes(x = k, y = error_test,colour= 'test')) + geom_line( mapping = aes(x = k, y = error_test,colour= 'test'))
+
+```
+
+#build decision tree model by n-fold
+```{r}
+tree_fit_1 <- tree_f(train_1)
+tree_fit_2 <- tree_f(train_2)
+tree_fit_3 <- tree_f(train_3)
+tree_fit_4 <- tree_f(train_4)
+tree_fit_5 <- tree_f(train_5)
+
+predf_treeval_1 <-as.data.frame(predf_tree(tree_fit_1,test_1))
+predf_treeval_2 <-as.data.frame(predf_tree(tree_fit_2,test_2))
+predf_treeval_3 <-as.data.frame(predf_tree(tree_fit_3,test_3))
+predf_treeval_4 <-as.data.frame(predf_tree(tree_fit_4,test_4))
+predf_treeval_5 <-as.data.frame(predf_tree(tree_fit_5,test_5))
+
+predf_traintree1 <- as.data.frame(predf(tree_fit_1,train_1))
+predf_traintree2 <- as.data.frame(predf(tree_fit_2,train_2))
+predf_traintree3 <- as.data.frame(predf(tree_fit_3,train_3))
+predf_traintree4 <- as.data.frame(predf(tree_fit_4,train_4))
+predf_traintree5 <- as.data.frame(predf(tree_fit_5,train_5))
+
+predf_tree_test1 <- as.data.frame(predf(tree_fit_1,credit_test))
+predf_tree_test2 <- as.data.frame(predf(tree_fit_2,credit_test))
+predf_tree_test3 <- as.data.frame(predf(tree_fit_3,credit_test))
+predf_tree_test4 <- as.data.frame(predf(tree_fit_4,credit_test))
+predf_tree_test5 <- as.data.frame(predf(tree_fit_5,credit_test))
+
+result_tree1<- as.data.frame(ifelse(predf_tree_1[,1]>0.5,0,1))
+result_tree2<- as.data.frame(ifelse(predf_tree_2[,1]>0.5,0,1))
+result_tree3<- as.data.frame(ifelse(predf_tree_3[,1]>0.5,0,1))
+result_tree4<- as.data.frame(ifelse(predf_tree_4[,1]>0.5,0,1))
+result_tree5<- as.data.frame(ifelse(predf_tree_5[,1]>0.5,0,1))
+
+result_traintree1 <- as.data.frame(ifelse(predf_traintree1[,1]>0.5,0,1))
+result_traintree2 <- as.data.frame(ifelse(predf_traintree2[,1]>0.5,0,1))
+result_traintree3 <- as.data.frame(ifelse(predf_traintree3[,1]>0.5,0,1))
+result_traintree4 <- as.data.frame(ifelse(predf_traintree4[,1]>0.5,0,1))
+result_traintree5 <- as.data.frame(ifelse(predf_traintree5[,1]>0.5,0,1))
+
+result_tree_test1 <- as.data.frame(ifelse(predf_tree_test1[,1]>0.5,0,1))
+result_tree_test2 <- as.data.frame(ifelse(predf_tree_test2[,1]>0.5,0,1))
+result_tree_test3 <- as.data.frame(ifelse(predf_tree_test3[,1]>0.5,0,1))
+result_tree_test4 <- as.data.frame(ifelse(predf_tree_test4[,1]>0.5,0,1))
+result_tree_test5 <- as.data.frame(ifelse(predf_tree_test5[,1]>0.5,0,1))
+
+error_tree1 <- Error_test(result_tree1,credit_test_1$default)
+error_tree2 <- Error_test(result_tree2,credit_test_2$default)
+error_tree3 <- Error_test(result_tree3,credit_test_3$default)
+error_tree4 <- Error_test(result_tree4,credit_test_4$default)
+error_tree5 <- Error_test(result_tree5,credit_test_5$default)
+
+error_traintree1 <- Error_train(result_traintree1,credit_train_1$default)
+error_traintree2 <- Error_train(result_traintree2,credit_train_2$default)
+error_traintree3 <- Error_train(result_traintree3,credit_train_3$default)
+error_traintree4 <- Error_train(result_traintree4,credit_train_4$default)
+error_traintree5 <- Error_train(result_traintree5,credit_train_5$default)
+
+error_testtree1 <- Error_test(result_tree_test1,credit_test$default)
+error_testtree2 <- Error_test(result_tree_test2,credit_test$default)
+error_testtree3 <- Error_test(result_tree_test3,credit_test$default)
+error_testtree4 <- Error_test(result_tree_test4,credit_test$default)
+error_testtree5 <- Error_test(result_tree_test5,credit_test$default)
+
+total_traintree_error <- rbind(error_traintree1,error_traintree2,error_traintree3,error_traintree4,error_traintree5)
+total_tree_error <- rbind(error_tree1,error_tree2,error_tree3,error_tree4,error_tree5)
+total_testtree_error <- rbind(error_testtree1,error_testtree2,error_testtree3,error_testtree4,error_testtree5)
+k_e_tree <- as.data.frame(cbind(total_tree_error,total_traintree_error,total_testtree_error,k))
+
+
+names(k_e_tree )[1:4] = c("error_eval","error_train","error_test","k")
+ggplot(data = k_e_tree) + geom_point( mapping = aes(x = k, y = error_eval,colour = 'eval')) + geom_line( mapping = aes(x = k, y = error_eval,colour = 'eval')) + geom_point( mapping = aes(x = k, y = error_train, colour = 'train')) + geom_line( mapping = aes(x = k, y = error_train, colour = 'train'))+geom_point( mapping = aes(x = k, y = error_test, colour = 'test')) + geom_line( mapping = aes(x = k, y = error_test, colour = 'test'))
+```
+
+#build decision tree model by n-fold  
+```{r}
+boost1 <- boost_f(train_1)
+boost2 <- boost_f(train_2)
+boost3 <- boost_f(train_3)
+boost4 <- boost_f(train_4)
+boost5 <- boost_f(train_5)
+
+predf_eval_boost1 <-as.data.frame(predf_boost(boost1,test_1))
+predf_eval_boost2 <-as.data.frame(predf_boost(boost2,test_2))
+predf_eval_boost3 <-as.data.frame(predf_boost(boost3,test_3))
+predf_eval_boost4 <-as.data.frame(predf_boost(boost4,test_4))
+predf_eval_boost5 <-as.data.frame(predf_boost(boost5,test_5))
+
+predf_trainboost1 <- as.data.frame(predf_boost(boost_1,train_1))
+predf_trainboost2 <- as.data.frame(predf_boost(boost_2,train_2))
+predf_trainboost3 <- as.data.frame(predf_boost(boost_3,train_3))
+predf_trainboost4 <- as.data.frame(predf_boost(boost_4,train_4))
+predf_trainboost5 <- as.data.frame(predf_boost(boost_5,train_5))
+
+predf_boost1 <-as.data.frame(predf_boost(boost1,credit_test))
+predf_boost2 <-as.data.frame(predf_boost(boost2,credit_test))
+predf_boost3 <-as.data.frame(predf_boost(boost3,credit_test))
+predf_boost4 <-as.data.frame(predf_boost(boost4,credit_test))
+predf_boost5 <-as.data.frame(predf_boost(boost5,credit_test))
+
+result_eval_boost1<- as.data.frame(ifelse(predf_eval_boost1[,1]>0.5,1,0))
+result_eval_boost2<- as.data.frame(ifelse(predf_eval_boost2[,1]>0.5,1,0))
+result_eval_boost3<- as.data.frame(ifelse(predf_eval_boost3[,1]>0.5,1,0))
+result_eval_boost4<- as.data.frame(ifelse(predf_eval_boost4[,1]>0.5,1,0))
+result_eval_boost5<- as.data.frame(ifelse(predf_eval_boost5[,1]>0.5,1,0))
+
+result_trainboost1 <- as.data.frame(ifelse(predf_trainboost1[,1]>0.5,1,0))
+result_trainboost2 <- as.data.frame(ifelse(predf_trainboost2[,1]>0.5,1,0))
+result_trainboost3 <- as.data.frame(ifelse(predf_trainboost3[,1]>0.5,1,0))
+result_trainboost4 <- as.data.frame(ifelse(predf_trainboost4[,1]>0.5,1,0))
+result_trainboost5 <- as.data.frame(ifelse(predf_trainboost5[,1]>0.5,1,0))
+
+result_test_boost1 <- as.data.frame(ifelse(predf_boost1[,1]>0.5,1,0))
+result_test_boost2 <- as.data.frame(ifelse(predf_boost1[,1]>0.5,1,0))
+result_test_boost3 <- as.data.frame(ifelse(predf_boost3[,1]>0.5,1,0))
+result_test_boost4 <- as.data.frame(ifelse(predf_boost4[,1]>0.5,1,0))
+result_test_boost5 <- as.data.frame(ifelse(predf_boost5[,1]>0.5,1,0))
+
+error_eval_boost1 <- Error_test(result_eval_boost1,credit_test_1$default)
+error_eval_boost2 <- Error_test(result_eval_boost2,credit_test_2$default)
+error_eval_boost3 <- Error_test(result_eval_boost3,credit_test_3$default)
+error_eval_boost4 <- Error_test(result_eval_boost4,credit_test_4$default)
+error_eval_boost5 <- Error_test(result_eval_boost5,credit_test_5$default)
+
+error_trainboost1 <- Error_train(result_trainboost1,credit_train_1$default)
+error_trainboost2 <- Error_train(result_trainboost2,credit_train_2$default)
+error_trainboost3 <- Error_train(result_trainboost3,credit_train_3$default)
+error_trainboost4 <- Error_train(result_trainboost4,credit_train_4$default)
+error_trainboost5 <- Error_train(result_trainboost5,credit_train_5$default)
+
+error_boost1 <- Error_test(result_test_boost1,credit_test$default)
+error_boost2 <- Error_test(result_test_boost2,credit_test$default)
+error_boost3 <- Error_test(result_test_boost3,credit_test$default)
+error_boost4 <- Error_test(result_test_boost4,credit_test$default)
+error_boost5 <- Error_test(result_test_boost5,credit_test$default)
+
+
+total_trainboosterror <- rbind(error_trainboost1,error_trainboost2,error_trainboost3,error_trainboost4,
+                                error_trainboost5)
+total_testboost_error <- rbind(error_boost1,error_boost2,error_boost3,error_boost4,error_boost5)
+total_evalboost_error <- rbind(error_eval_boost1,error_eval_boost2,error_eval_boost3,error_eval_boost4,error_eval_boost5)
+
+k_e_boost <- as.data.frame(cbind(total_evalboost_error,total_trainboosterror,total_testboost_error,k))
+
+
+names(k_e_boost)[1:4] = c("error_eval","error_train","error_test","k")
+
+ggplot(data = k_e_boost) + geom_point( mapping = aes(x = k, y = error_eval,colour = 'eval')) + geom_line( mapping = aes(x = k, y = error_eval,colour = 'eval')) + geom_point( mapping = aes(x = k, y = error_train,colour = 'train')) + geom_line( mapping = aes(x = k, y = error_train,colour = 'train')) +geom_point( mapping = aes(x = k, y = error_test,colour = 'test')) + geom_line( mapping = aes(x = k, y = error_test,colour = 'test'))
+
+```
+
+
+
+
+
+
